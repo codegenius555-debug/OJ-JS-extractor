@@ -1,97 +1,96 @@
-# OnlineJobs.ph JSON Extractor
+# Job Extractor – OnlineJobs.ph & JobStreet Philippines
 
-A lightweight Google Chrome Manifest V3 extension for extracting information from the **currently open individual OnlineJobs.ph job listing**.
+A Google Chrome Manifest V3 extension that extracts one currently open job listing and exports it as JSON.
+
+## Supported websites
+
+- OnlineJobs.ph
+- JobStreet Philippines (`ph.jobstreet.com`)
+- JobStreet Philippines legacy/redirect domains (`jobstreet.com.ph`)
 
 ## Features
 
-- Extracts one job from the active OnlineJobs.ph tab.
-- Looks for structured `JobPosting` data (JSON-LD) first, then falls back to visible page content.
-- Extracts:
-  - Platform
-  - Job ID
-  - Job title
-  - Employer
-  - Location
-  - Salary
-  - Employment type
-  - Hours per week
-  - Experience level
-  - Date posted
-  - Skills
-  - Job description
-  - Job URL
-  - Extraction timestamp
-- Shows a formatted JSON preview.
+- Extracts an individual job detail page, not a list of search results.
+- Uses structured `JobPosting` JSON-LD when the website provides it, then falls back to visible page text.
+- Displays a formatted JSON preview.
 - Copies JSON to the clipboard.
 - Downloads a `.json` file.
-- Does not send page data to an external server.
+- Runs locally in Chrome; no external API or server is used.
 
-## Install on Windows
+## Fields
 
-1. Download and extract `onlinejobs-json-extractor.zip`.
-2. Open Google Chrome.
-3. Enter `chrome://extensions` in the address bar.
-4. Turn on **Developer mode** in the upper-right corner.
-5. Click **Load unpacked**.
-6. Select the extracted `onlinejobs-json-extractor` folder (the folder containing `manifest.json`).
-7. Pin **OnlineJobs.ph JSON Extractor** to the Chrome toolbar if you want quick access.
+Common fields:
+- `platform`
+- `job_id`
+- `job_title`
+- `employer`
+- `location`
+- `salary`
+- `salary_disclosed`
+- `employment_type`
+- `hours_per_week`
+- `experience_level`
+- `date_posted`
+- `posted_text`
+- `skills`
+- `description`
+- `job_url`
+- `extracted_at`
+- `extraction_warnings`
+
+JobStreet-specific fields:
+- `job_category`
+- `work_arrangement`
+- `shift_schedule`
+- `matched_skills`
+
+`matched_skills` represents skills shown in JobStreet's "How you match" panel. Those are not necessarily the employer's mandatory requirements. The `skills` field is reserved for skills/qualifications identified as job requirements or supplied as structured job data.
+
+Undisclosed salary is preserved as `"Undisclosed"` and `salary_disclosed` is `false`. Missing information is left as `null` or an empty array; the extension does not guess.
+
+## Install on Windows 10/11
+
+1. Download `job-extractor-onlinejobs-jobstreet.zip`.
+2. Right-click the ZIP and choose **Extract All...**.
+3. Open Google Chrome.
+4. Enter `chrome://extensions` in the address bar.
+5. Turn on **Developer mode** in the upper-right corner.
+6. Click **Load unpacked**.
+7. Select the extracted `onlinejobs-json-extractor` folder (the folder containing `manifest.json`).
+8. Optionally pin the extension using Chrome's puzzle-piece menu.
 
 ## Use
 
-1. Open an individual job listing on `https://www.onlinejobs.ph/`.
+1. Open an individual job detail page on OnlineJobs.ph or JobStreet Philippines.
 2. Click the extension icon.
 3. Click **Extract & Export Both**.
-4. The extension will attempt to copy the JSON to your clipboard and open Chrome's save dialog for the `.json` file.
-5. Review the JSON preview in the popup.
+4. Review the JSON preview. Chrome will copy the JSON and open the file save dialog.
 
-You can also click **Extract Only**, then use **Copy JSON** or **Download JSON** separately.
-
-## Example output
-
-```json
-{
-  "platform": "OnlineJobs.ph",
-  "job_id": null,
-  "job_title": "Example Job Title",
-  "employer": "Example Employer",
-  "location": "Remote",
-  "salary": "$1,000 - $1,500/month",
-  "employment_type": "full time",
-  "hours_per_week": "40 hours/week",
-  "experience_level": null,
-  "date_posted": "2026-11-12",
-  "skills": ["React", "JavaScript", "Node.js"],
-  "description": "Example job description...",
-  "job_url": "https://www.onlinejobs.ph/jobseekers/job/123456",
-  "extracted_at": "2026-11-13T12:00:00.000Z",
-  "extraction_warnings": []
-}
-```
-
-Values in this example are illustrative. The extension does not invent missing information; fields it cannot detect are `null`, empty arrays, or listed in `extraction_warnings`.
+Use **Extract Only** if you want to inspect the result before copying or downloading.
 
 ## Troubleshooting
 
-### "Open an OnlineJobs.ph job listing"
-Make sure the active tab is on `onlinejobs.ph` or `www.onlinejobs.ph`.
+### The popup says the site is unsupported
+Confirm the active tab is on `onlinejobs.ph`, `ph.jobstreet.com`, or a JobStreet Philippines domain.
 
-### "No job title was found"
-Open an individual job detail page, not the search results page. If the page has loaded dynamically, refresh it and try again.
+### No job title was found
+Open a single job detail page rather than a search-results page. Refresh the page and try again after the listing has fully loaded.
 
-### Some fields are missing
-OnlineJobs.ph may change its page layout, and employers may use different formats. The extension uses structured data when available and several page-content fallbacks. Missing fields are left blank rather than guessed.
+### Some fields are null
+JobStreet can change its page structure, and some employers do not publish every detail. The extension uses a mix of structured data and visible page text. It leaves undetected fields empty instead of making up values.
 
-### Extension changes do not appear
-Open `chrome://extensions`, find the extension, and click the reload icon. Refresh the OnlineJobs.ph job page afterward.
+### The extension does not update
+Go to `chrome://extensions`, click the reload icon on the extension, and refresh the job page.
 
 ## Project files
 
-- `manifest.json` — Chrome extension configuration.
-- `popup.html` — Extension popup.
+- `manifest.json` — Chrome extension configuration and supported domains.
+- `popup.html` — Popup layout.
 - `popup.css` — Popup styling.
 - `popup.js` — Extraction and export controls.
-- `content.js` — Reads the active job page and builds the JSON object.
+- `content.js` — Website detection and job-page extraction.
+- `README.md` — Installation and usage instructions.
 
 ## Privacy
 
-The extension runs locally in the browser. It does not include analytics, tracking, remote APIs, or external data uploads. It reads the current OnlineJobs.ph page only when you click an extraction button.
+The extension only reads the current supported job page when you click an extraction button. It has no analytics, tracking, external API calls, or automatic background scraping.

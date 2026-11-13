@@ -1,7 +1,7 @@
 (() => {
   // Prevent duplicate message listeners if the popup injects this file again.
-  if (window.__OLJ_JSON_EXTRACTOR_LOADED__) return;
-  window.__OLJ_JSON_EXTRACTOR_LOADED__ = true;
+  if (window.__JOB_JSON_EXTRACTOR_LOADED__) return;
+  window.__JOB_JSON_EXTRACTOR_LOADED__ = true;
 
   const cleanText = (value) => String(value || "")
     .replace(/\u00a0/g, " ")
@@ -9,6 +9,14 @@
     .replace(/\s*\n\s*/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+
+  const host = location.hostname.toLowerCase();
+  const isJobStreet = host === "ph.jobstreet.com" ||
+    host === "jobstreet.com" ||
+    host.endsWith(".jobstreet.com") ||
+    host === "jobstreet.com.ph" ||
+    host.endsWith(".jobstreet.com.ph");
+  const platformName = isJobStreet ? "JobStreet Philippines" : "OnlineJobs.ph";
 
   function htmlToText(value) {
     if (!value) return "";
@@ -43,18 +51,13 @@
         results.push(value);
       }
 
-      if (value["@graph"]) walk(value["@graph"]);
-      for (const [key, child] of Object.entries(value)) {
-        if (key !== "@graph" && child && typeof child === "object") walk(child);
+      for (const child of Object.values(value)) {
+        if (child && typeof child === "object") walk(child);
       }
     }
 
     document.querySelectorAll('script[type="application/ld+json"]').forEach(script => {
-      try {
-        walk(JSON.parse(script.textContent));
-      } catch {
-        // Ignore malformed JSON-LD blocks and continue with visible page content.
-      }
+      try { walk(JSON.parse(script.textContent)); } catch { /* Ignore invalid JSON-LD. */ }
     });
 
     return results[0] || null;
@@ -72,16 +75,14 @@
     }
     if (typeof value === "object") {
       if (value.name) return toPlainString(value.name);
-      if (value.value) return toPlainString(value.value);
+      if (value.value != null) return toPlainString(value.value);
     }
     return null;
   }
 
   function salaryFromStructured(baseSalary) {
     if (!baseSalary) return null;
-    if (typeof baseSalary === "string" || typeof baseSalary === "number") {
-      return toPlainString(baseSalary);
-    }
+    if (typeof baseSalary === "string" || typeof baseSalary === "number") return toPlainString(baseSalary);
 
     const currency = baseSalary.currency || "";
     const value = baseSalary.value;
@@ -89,9 +90,7 @@
       const min = value.minValue ?? value.value;
       const max = value.maxValue;
       const unit = value.unitText ? ` / ${value.unitText}` : "";
-      if (min != null && max != null && min !== max) {
-        return `${currency} ${min} - ${max}${unit}`.trim();
-      }
+      if (min != null && max != null && min !== max) return `${currency} ${min} - ${max}${unit}`.trim();
       if (min != null) return `${currency} ${min}${unit}`.trim();
     }
     if (value != null) return `${currency} ${value}`.trim();
@@ -100,9 +99,7 @@
 
   function bodyLines() {
     return cleanText(document.body?.innerText || "")
-      .split("\n")
-      .map(line => cleanText(line))
-      .filter(Boolean);
+      .split("\n").map(cleanText).filter(Boolean);
   }
 
   function findLabeledValue(lines, labels) {
@@ -112,19 +109,27 @@
 
     for (let i = 0; i < lines.length; i++) {
       const match = lines[i].match(sameLine);
-      if (match && match[1]) return cleanText(match[1]);
+      if (match?.[1]) return cleanText(match[1]);
       if (labelOnly.test(lines[i]) && lines[i + 1]) return cleanText(lines[i + 1]);
     }
     return null;
   }
 
-  function findSalary(text) {
+  function findPostedText(lines) {
+    return lines.find(line => /^(?:posted|listed)\s+(?:\d+\s*(?:m|min|mins|minutes?|h|hrs?|hours?|d|days?|w|weeks?)\s*ago|today|yesterday)/i.test(line)) || null;
+  }
+
+  function salaryFromVisibleText(lines, wholeText) {
+    const explicit = findLabeledValue(lines, ["salary", "compensation", "pay", "rate"]);
+    if (explicit) return explicit;
+    const undisclosed = lines.find(line => /^salary\s+(?:is\s+)?undisclosed$/i.test(line));
+    if (undisclosed) return "Undisclosed";
+
     const patterns = [
-      /(?:₱|PHP|USD|US\$|\$)\s?\d[\d,]*(?:\.\d{1,2})?(?:\s*(?:-|–|to)\s*(?:₱|PHP|USD|US\$|\$)?\s?\d[\d,]*(?:\.\d{1,2})?)?(?:\s*(?:\/|per)\s*(?:hour|hr|month|mo|week|year))?/i,
-      /\d[\d,]*(?:\.\d{1,2})?\s*(?:PHP|USD)\s*(?:-|–|to)\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:PHP|USD)?/i
+      /(?:₱|PHP|USD|US\$|\$)\s?\d[\d,]*(?:\.\d{1,2})?(?:\s*(?:-|–|to)\s*(?:₱|PHP|USD|US\$|\$)?\s?\d[\d,]*(?:\.\d{1,2})?)?(?:\s*(?:\/|per)\s*(?:hour|hr|month|mo|week|year))?/i
     ];
     for (const pattern of patterns) {
-      const match = text.match(pattern);
+      const match = wholeText.match(pattern);
       if (match) return cleanText(match[0]);
     }
     return null;
@@ -133,30 +138,48 @@
   function normalizeSkills(value) {
     if (!value) return [];
     const values = Array.isArray(value) ? value : String(value).split(/[,;\n|]/);
-    return [...new Set(values.map(item => {
-      if (typeof item === "object") return toPlainString(item);
-      return cleanText(item);
-    }).filter(Boolean))];
+    return [...new Set(values.map(item => typeof item === "object" ? toPlainString(item) : cleanText(item)).filter(Boolean))];
   }
 
-  function getSkills(jobPosting, lines) {
-    const structured = normalizeSkills(jobPosting?.skills || jobPosting?.experienceRequirements);
+  function getStructuredSkills(jobPosting) {
+    const raw = jobPosting?.skills || jobPosting?.experienceRequirements || jobPosting?.qualifications;
+    return normalizeSkills(raw);
+  }
+
+  function getRequiredSkills(lines, jobPosting) {
+    const structured = getStructuredSkills(jobPosting);
     if (structured.length) return structured;
 
-    const keywordList = normalizeSkills(jobPosting?.keywords);
-    if (keywordList.length > 1) return keywordList;
-
-    const labelIndex = lines.findIndex(line => /^(skills required|required skills|skills|key skills)\s*:?\s*$/i.test(line));
+    const labelIndex = lines.findIndex(line => /^(required skills|skills required|technical skills|required qualifications|key skills)\s*:?\s*$/i.test(line));
     if (labelIndex >= 0) {
       const collected = [];
-      for (let i = labelIndex + 1; i < Math.min(lines.length, labelIndex + 15); i++) {
-        if (/^(about the job|job description|requirements|responsibilities|benefits|salary)\s*:?\s*$/i.test(lines[i])) break;
-        const parts = lines[i].split(/[,;|]/).map(cleanText).filter(Boolean);
-        collected.push(...parts);
+      for (let i = labelIndex + 1; i < Math.min(lines.length, labelIndex + 20); i++) {
+        if (/^(about the job|job description|responsibilities|benefits|salary|requirements)\s*:?\s*$/i.test(lines[i])) break;
+        collected.push(...lines[i].split(/[,;|]/).map(cleanText).filter(Boolean));
       }
-      return [...new Set(collected)].slice(0, 30);
+      return [...new Set(collected)].slice(0, 40);
     }
     return [];
+  }
+
+  function getMatchedSkills(lines) {
+    const start = lines.findIndex(line => /^how you match$/i.test(line));
+    if (start < 0) return [];
+
+    const results = [];
+    for (let i = start + 1; i < Math.min(lines.length, start + 18); i++) {
+      const line = lines[i];
+      if (/^\+\s*\d+\s+more$/i.test(line) || /^work setup\s*:/i.test(line) || /^shift schedule\s*:/i.test(line)) break;
+      if (/^matches based on your career history$/i.test(line)) continue;
+      if (/^(work setup|shift schedule|job description|about the job)\b/i.test(line)) break;
+
+      const cleaned = line.replace(/\s*\+\s*$/, "").trim();
+      if (!cleaned || cleaned.length > 65 || /^how you match$/i.test(cleaned)) continue;
+      if (/^(matches based on|based on your)/i.test(cleaned)) continue;
+      if (/^\+/.test(cleaned)) continue;
+      results.push(cleaned);
+    }
+    return [...new Set(results)];
   }
 
   function textFromElement(element) {
@@ -168,9 +191,11 @@
 
   function getDescription(jobPosting) {
     const structured = htmlToText(jobPosting?.description);
-    if (structured && structured.length > 50) return structured.slice(0, 30000);
+    if (structured && structured.length > 50) return structured.slice(0, 40000);
 
     const selectors = [
+      '[data-automation="jobDescription"]',
+      '[data-testid*="job-description" i]',
       '[id*="job-description" i]',
       '[class*="job-description" i]',
       '[id*="description" i]',
@@ -183,40 +208,48 @@
 
     let best = "";
     let bestScore = -1;
-
     for (const selector of selectors) {
       document.querySelectorAll(selector).forEach(element => {
         const text = textFromElement(element);
-        if (text.length < 80 || text.length > 30000) return;
+        if (text.length < 100 || text.length > 40000) return;
 
-        let score = Math.min(text.length, 5000) / 100;
-        if (/responsibilities|requirements|qualifications|what you.ll do|about the role/i.test(text)) score += 15;
-        if (/job description|description/i.test(element.id + " " + element.className)) score += 30;
-        if (text.length > 15000) score -= 20;
-
-        if (score > bestScore) {
-          best = text;
-          bestScore = score;
-        }
+        let score = Math.min(text.length, 7000) / 100;
+        if (/responsibilities|requirements|qualifications|what you.ll do|about the role|about the job/i.test(text)) score += 20;
+        if (/job description|description/i.test(`${element.id} ${element.className} ${element.getAttribute("data-automation") || ""}`)) score += 35;
+        if (text.length > 18000) score -= 25;
+        if (score > bestScore) { best = text; bestScore = score; }
       });
     }
 
-    if (best) return best.slice(0, 30000);
+    if (best) return best.slice(0, 40000);
 
-    // Last resort: collect paragraph-like content rather than returning the
-    // entire page (which usually contains navigation and unrelated links).
     const paragraphs = [...document.querySelectorAll("main p, article p, p")]
-      .map(textFromElement)
-      .filter(text => text.length > 35);
-    return paragraphs.join("\n\n").slice(0, 30000) || null;
+      .map(textFromElement).filter(text => text.length > 35);
+    return paragraphs.join("\n\n").slice(0, 40000) || null;
   }
 
-  function getEmployer(jobPosting, lines) {
+  function getEmployer(jobPosting, lines, title) {
     const structured = toPlainString(jobPosting?.hiringOrganization);
     if (structured) return structured;
 
     const labeled = findLabeledValue(lines, ["employer", "company", "company name", "posted by", "client"]);
     if (labeled) return labeled;
+
+    // JobStreet commonly shows the employer immediately below the job title.
+    const titleIndex = lines.findIndex(line => title && line.toLowerCase() === title.toLowerCase());
+    if (titleIndex >= 0) {
+      for (let i = titleIndex + 1; i < Math.min(lines.length, titleIndex + 5); i++) {
+        const candidate = lines[i]
+          .replace(/\bView all jobs\b/ig, "")
+          .replace(/[★☆]\s*[\d.]+/g, "")
+          .replace(/\s+\d\.\d\s*$/, "")
+          .trim();
+        if (!candidate || candidate.length > 100) continue;
+        if (/^(?:verified|view all jobs|full time|part time|salary|posted|pasig city|manila|remote)/i.test(candidate)) continue;
+        if (/^(?:location|work setup|shift schedule)\s*:/i.test(candidate)) continue;
+        return candidate;
+      }
+    }
 
     const org = document.querySelector('[itemprop="hiringOrganization"] [itemprop="name"], [itemprop="hiringOrganization"]');
     return cleanText(org?.innerText || org?.textContent || "") || null;
@@ -229,22 +262,31 @@
       const formatted = locations.map(item => {
         const address = item?.address || item;
         if (typeof address === "string") return cleanText(address);
-        return [
-          address?.addressLocality,
-          address?.addressRegion,
-          address?.addressCountry
-        ].filter(Boolean).join(", ");
+        return [address?.addressLocality, address?.addressRegion, address?.addressCountry].filter(Boolean).join(", ");
       }).filter(Boolean);
       if (formatted.length) return formatted.join(" | ");
     }
-    return findLabeledValue(lines, ["location", "job location", "work location"]);
+    const labeled = findLabeledValue(lines, ["location", "job location", "work location"]);
+    if (labeled) return labeled;
+
+    // JobStreet's summary card often presents the location as a standalone line.
+    const candidate = lines.find(line =>
+      /\b(?:city|metro manila|cebu|davao|laguna|cavite|remote|philippines)\b/i.test(line) &&
+      line.length < 150 &&
+      !/^(?:work setup|shift schedule)\s*:/i.test(line)
+    );
+    return candidate || null;
   }
 
-  function getDatePosted(jobPosting) {
-    if (jobPosting?.datePosted) return toPlainString(jobPosting.datePosted);
-    return getMeta('meta[property="article:published_time"]', 'meta[name="date"]') ||
-      document.querySelector("time[datetime]")?.getAttribute("datetime") ||
-      null;
+  function getJobCategory(lines) {
+    const labeled = findLabeledValue(lines, ["job category", "classification", "category", "industry"]);
+    if (labeled) return labeled;
+
+    const knownCategoryLine = lines.find(line =>
+      /-\s*(?:software|information|engineering|accounting|administration|sales|marketing|human resources|healthcare|education|customer service|manufacturing|construction)/i.test(line) &&
+      line.length < 180
+    );
+    return knownCategoryLine || null;
   }
 
   function getEmploymentType(jobPosting, lines) {
@@ -254,11 +296,21 @@
     const labeled = findLabeledValue(lines, ["employment type", "job type", "work type"]);
     if (labeled) return labeled;
 
-    const text = lines.join(" ").toLowerCase();
-    for (const type of ["full-time", "full time", "part-time", "part time", "contract", "freelance", "temporary", "internship"]) {
-      if (text.includes(type)) return type.replace("-", " ");
-    }
+    const exact = lines.find(line => /^(full[- ]time|part[- ]time|contract|casual|temporary|freelance|internship)$/i.test(line));
+    if (exact) return exact.toLowerCase();
     return null;
+  }
+
+  function getWorkArrangement(lines) {
+    const labeled = findLabeledValue(lines, ["work setup", "work arrangement", "work location type", "work mode"]);
+    if (labeled) return labeled;
+
+    const line = lines.find(line => /^(remote|hybrid|onsite|on-site|work from home)$/i.test(line));
+    return line || null;
+  }
+
+  function getShiftSchedule(lines) {
+    return findLabeledValue(lines, ["shift schedule", "work schedule", "schedule"]);
   }
 
   function getHoursPerWeek(lines, description) {
@@ -282,8 +334,9 @@
       if (typeof identifier === "string" || typeof identifier === "number") return String(identifier);
       if (identifier.value != null) return String(identifier.value);
     }
-    const match = location.pathname.match(/(?:job|jobs|jobseekers\/job)[/-](\d+)/i) ||
-      location.pathname.match(/\/(\d{4,})(?:\/|$)/);
+    const match = location.pathname.match(/\/(?:job|jobs)\/(\d+)/i) ||
+      location.pathname.match(/(?:job|jobs)[/-](\d+)/i) ||
+      location.pathname.match(/\/(\d{6,})(?:\/|$)/);
     return match ? match[1] : null;
   }
 
@@ -295,52 +348,60 @@
     const title = toPlainString(jobPosting?.title) ||
       cleanText(document.querySelector("h1")?.innerText || "") ||
       getMeta('meta[property="og:title"]', 'meta[name="twitter:title"]') ||
-      cleanText(document.title).replace(/\s*[|–-]\s*OnlineJobs\.ph.*$/i, "") ||
+      cleanText(document.title).replace(/\s*[|–-]\s*(?:OnlineJobs\.ph|Jobstreet).*$/i, "") ||
       null;
 
-    const description = getDescription(jobPosting);
-    const salary = salaryFromStructured(jobPosting?.baseSalary) ||
-      findLabeledValue(lines, ["salary", "compensation", "pay", "rate"]) ||
-      findSalary(pageText);
+    if (!title) {
+      throw new Error("No job title was found. Open an individual job detail page, not the search results page.");
+    }
 
-    const canonical = document.querySelector('link[rel="canonical"]')?.href;
-    const skills = getSkills(jobPosting, lines);
+    const description = getDescription(jobPosting);
+    const salary = salaryFromStructured(jobPosting?.baseSalary) || salaryFromVisibleText(lines, pageText);
+    const salaryDisclosed = salary ? !/undisclosed/i.test(salary) : null;
+    const canonical = document.querySelector('link[rel="canonical"]')?.href || location.href;
+    const postedText = findPostedText(lines);
+    const datePosted = toPlainString(jobPosting?.datePosted) ||
+      getMeta('meta[property="article:published_time"]', 'meta[name="date"]') ||
+      postedText ||
+      document.querySelector("time[datetime]")?.getAttribute("datetime") ||
+      null;
 
     const data = {
-      platform: "OnlineJobs.ph",
+      platform: platformName,
       job_id: getJobId(jobPosting),
       job_title: title,
-      employer: getEmployer(jobPosting, lines),
+      employer: getEmployer(jobPosting, lines, title),
       location: getLocation(jobPosting, lines),
       salary: salary,
+      salary_disclosed: salaryDisclosed,
       employment_type: getEmploymentType(jobPosting, lines),
+      job_category: isJobStreet ? getJobCategory(lines) : null,
+      work_arrangement: isJobStreet ? getWorkArrangement(lines) : null,
+      shift_schedule: isJobStreet ? getShiftSchedule(lines) : null,
       hours_per_week: getHoursPerWeek(lines, description),
       experience_level: getExperienceLevel(lines, description),
-      date_posted: getDatePosted(jobPosting),
-      skills: skills,
+      date_posted: datePosted,
+      posted_text: postedText,
+      skills: getRequiredSkills(lines, jobPosting),
+      matched_skills: isJobStreet ? getMatchedSkills(lines) : [],
       description: description,
-      job_url: canonical || location.href,
+      job_url: canonical,
       extracted_at: new Date().toISOString(),
       extraction_warnings: []
     };
 
-    if (!data.job_title) {
-      throw new Error("No job title was found. Make sure you are viewing an individual job listing, not the search results page.");
-    }
     if (!data.description) data.extraction_warnings.push("Job description was not detected.");
-    if (!data.salary) data.extraction_warnings.push("Salary was not detected.");
+    if (!data.salary) data.extraction_warnings.push("Salary was not detected or is not displayed.");
     if (!data.employer) data.extraction_warnings.push("Employer name was not detected.");
-    if (!data.skills.length) data.extraction_warnings.push("Skills were not detected.");
+    if (!data.skills.length && !data.matched_skills.length) data.extraction_warnings.push("No skill information was detected.");
 
     return data;
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type !== "OLJ_EXTRACT_JOB") return false;
-
     try {
-      const data = extractJob();
-      sendResponse({ ok: true, data });
+      sendResponse({ ok: true, data: extractJob() });
     } catch (error) {
       sendResponse({ ok: false, error: error?.message || "Extraction failed." });
     }

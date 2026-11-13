@@ -23,13 +23,24 @@ function setNotice(message, kind = "info") {
 }
 
 function safeFilename(value) {
-  const cleaned = String(value || "onlinejobs-job")
+  const cleaned = String(value || "job-listing")
     .toLowerCase()
     .replace(/[^a-z0-9-_]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 70);
-  return cleaned || "onlinejobs-job";
+  return cleaned || "job-listing";
+}
+
+function isSupportedHost(hostname) {
+  const host = hostname.toLowerCase();
+  return host === "onlinejobs.ph" ||
+    host.endsWith(".onlinejobs.ph") ||
+    host === "ph.jobstreet.com" ||
+    host === "jobstreet.com" ||
+    host.endsWith(".jobstreet.com") ||
+    host === "jobstreet.com.ph" ||
+    host.endsWith(".jobstreet.com.ph");
 }
 
 async function getActiveTab() {
@@ -41,8 +52,7 @@ async function requestExtraction(tabId) {
   try {
     return await chrome.tabs.sendMessage(tabId, { type: "OLJ_EXTRACT_JOB" });
   } catch (firstError) {
-    // The content script may not have loaded yet (for example, immediately
-    // after navigating to a listing). Inject it once and retry.
+    // The content script may not have loaded yet (for example, just after navigation).
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ["content.js"]
@@ -65,8 +75,8 @@ async function extractJob() {
     throw new Error("The current tab does not have a valid web address.");
   }
 
-  if (!["onlinejobs.ph", "www.onlinejobs.ph"].includes(parsedUrl.hostname)) {
-    throw new Error("Open an OnlineJobs.ph job listing before extracting.");
+  if (!isSupportedHost(parsedUrl.hostname)) {
+    throw new Error("Open an individual OnlineJobs.ph or JobStreet Philippines job listing before extracting.");
   }
 
   const response = await requestExtraction(tab.id);
@@ -80,8 +90,7 @@ async function extractJob() {
 
 function renderData(data) {
   latestData = data;
-  const json = JSON.stringify(data, null, 2);
-  output.value = json;
+  output.value = JSON.stringify(data, null, 2);
   copyButton.disabled = false;
   downloadButton.disabled = false;
 
@@ -107,6 +116,7 @@ async function copyJson() {
     const copied = document.execCommand("copy");
     setNotice(copied ? "JSON copied to your clipboard." : "Select the JSON preview and copy it manually.",
       copied ? "success" : "error");
+    if (!copied) throw new Error("Clipboard copy failed.");
   }
 }
 
@@ -149,7 +159,7 @@ async function runExtraction(exportBoth) {
           "error"
         );
       } else if (warnings.length) {
-        setNotice(`Exported both formats. Some fields were not found: ${warnings.join(" ")}`, "success");
+        setNotice(`Exported both. Some fields were not found: ${warnings.join(" ")}`);
       } else {
         setNotice("Success! JSON copied and download started.", "success");
       }

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "OnlineJobs.ph JSON Extractor",
-  "version": "1.0.0",
-  "description": "Extract structured information from the currently open OnlineJobs.ph job listing and copy or download it as JSON.",
+  "name": "Job Extractor \u2013 OnlineJobs.ph & JobStreet",
+  "version": "1.1.0",
+  "description": "Extract structured information from an individual OnlineJobs.ph or JobStreet Philippines job listing as JSON.",
   "permissions": [
     "activeTab",
     "scripting",
@@ -10,16 +10,23 @@
     "clipboardWrite"
   ],
   "action": {
-    "default_title": "Extract OnlineJobs.ph job",
+    "default_title": "Extract job as JSON",
     "default_popup": "popup.html"
   },
   "content_scripts": [
     {
       "matches": [
         "https://onlinejobs.ph/*",
-        "https://www.onlinejobs.ph/*"
+        "https://*.onlinejobs.ph/*",
+        "https://ph.jobstreet.com/*",
+        "https://jobstreet.com/*",
+        "https://*.jobstreet.com/*",
+        "https://jobstreet.com.ph/*",
+        "https://*.jobstreet.com.ph/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]
