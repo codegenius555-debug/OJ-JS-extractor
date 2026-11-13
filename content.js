@@ -162,6 +162,201 @@
     return [];
   }
 
+
+  // OnlineJobs.ph presents its description and its platform skill taxonomy
+  // in separate sections. These helpers read those sections independently.
+  function getOnlineJobsSection(lines, headingNames) {
+    const headingPattern = new RegExp(`^(?:${headingNames.join("|")})\\s*:?$`, "i");
+    const stopPattern = /^(?:TYPE OF WORK|WAGE\s*\/\s*SALARY|HOURS PER WEEK|DATE UPDATED|JOB OVERVIEW|SKILL REQUIREMENT|ABOUT THE COMPANY|ABOUT US|HOW TO APPLY|APPLICATION INSTRUCTIONS)\s*:?$/i;
+    const start = lines.findIndex(line => headingPattern.test(line));
+    if (start < 0) return null;
+
+    const collected = [];
+    for (let i = start + 1; i < Math.min(lines.length, start + 180); i++) {
+      if (stopPattern.test(lines[i])) break;
+      if (/^(?:please login|please log in|register as jobseeker|apply now|save job)$/i.test(lines[i])) break;
+      collected.push(lines[i]);
+      if (collected.join("\n").length > 18000) break;
+    }
+    return cleanText(collected.join("\n")) || null;
+  }
+
+  function getOnlineJobsSectionValue(lines, headingNames) {
+    const headingPattern = new RegExp(`^(?:${headingNames.join("|")})\\s*:?$`, "i");
+    const index = lines.findIndex(line => headingPattern.test(line));
+    if (index < 0) return null;
+    const value = lines[index + 1];
+    if (!value || /^(?:TYPE OF WORK|WAGE\s*\/\s*SALARY|HOURS PER WEEK|DATE UPDATED|JOB OVERVIEW|SKILL REQUIREMENT)$/i.test(value)) {
+      return null;
+    }
+    return value;
+  }
+
+  function getOnlineJobsSectionElement(headingText) {
+    const normalize = value => cleanText(value).replace(/:$/, "").toLowerCase();
+    const candidates = [...document.querySelectorAll("h1,h2,h3,h4,h5,h6,strong,b,p,div,span,dt")];
+    return candidates.find(element =>
+      normalize(element.textContent || "") === normalize(headingText) &&
+      (element.children.length === 0 || /^H[1-6]$/.test(element.tagName) || ["STRONG", "B", "DT"].includes(element.tagName)
+      )
+    ) || null;
+  }
+
+  function collectSkillNodes(root) {
+    if (!root) return [];
+    const nodes = [...root.querySelectorAll("li, a, [class*='skill' i], [class*='tag' i], [class*='badge' i]")];
+    const values = nodes
+      .map(node => cleanText(node.innerText || node.textContent || ""))
+      .filter(value => value && value.length <= 120 && !/^skill requirement$/i.test(value));
+    return [...new Set(values)];
+  }
+
+  function getOnlineJobsSkillRequirement(lines) {
+    const heading = getOnlineJobsSectionElement("SKILL REQUIREMENT");
+    let domText = "";
+    let domSkills = [];
+
+    if (heading) {
+      // The heading is commonly followed by a list or a group of skill tags.
+      const collectFollowing = start => {
+        const parts = [];
+        let node = start;
+        for (let i = 0; node && i < 12; i++, node = node.nextElementSibling) {
+          const text = textFromElement(node);
+          if (!text) continue;
+          if (/^(?:JOB OVERVIEW|TYPE OF WORK|WAGE\s*\/\s*SALARY|HOURS PER WEEK|DATE UPDATED)$/i.test(text)) break;
+          parts.push(node);
+          if (parts.map(textFromElement).join("\n").length > 5000) break;
+        }
+        return parts;
+      };
+
+      let siblings = collectFollowing(heading.nextElementSibling);
+      if (!siblings.length && heading.parentElement) {
+        siblings = collectFollowing(heading.parentElement.nextElementSibling);
+      }
+
+      if (siblings.length) {
+        domText = cleanText(siblings.map(textFromElement).filter(Boolean).join("\n"));
+        domSkills = [...new Set(siblings.flatMap(collectSkillNodes))];
+        // A list item's own text is more useful than a flattened parent block.
+        if (!domSkills.length) {
+          domSkills = [...new Set(siblings.flatMap(node =>
+            [...node.querySelectorAll("li")].map(item => cleanText(item.innerText || item.textContent || ""))
+          ).filter(Boolean))];
+        }
+      }
+    }
+
+    const textSection = getOnlineJobsSection(lines, ["SKILL REQUIREMENT"]);
+    const rawText = domText || textSection || null;
+    let skills = domSkills;
+
+    if (!skills.length && rawText) {
+      skills = rawText.split(/\n+/)
+        .map(line => cleanText(line.replace(/^[\s•·▪◦\-–—*]+/, "")))
+        .filter(line => line && line.length <= 160)
+        .filter(line => !/^(?:skill requirement|please login|register|apply now)$/i.test(line));
+    }
+
+    // Some page versions flatten the skill tags into a single text line.
+    // Split only on repeated separators; do not split multiword skill names.
+    if (skills.length === 1 && !/[,;|]/.test(skills[0]) && skills[0].length > 90) {
+      const parts = skills[0].split(/\s{2,}|[•·▪◦]/).map(cleanText).filter(Boolean);
+      if (parts.length > 1) skills = parts;
+    } else if (skills.length === 1 && /[,;|]/.test(skills[0])) {
+      skills = skills[0].split(/[,;|]/).map(cleanText).filter(Boolean);
+    }
+
+    return {
+      text: rawText,
+      skills: [...new Set(skills)].slice(0, 80)
+    };
+  }
+
+
+  function extractOverviewSections(overviewText) {
+    const result = {
+      responsibilities: null,
+      requirements: null,
+      qualifications: null,
+      preferred_qualifications: null,
+      how_to_apply: null,
+      benefits: null,
+      other_sections: {}
+    };
+    if (!overviewText) return result;
+
+    const aliases = [
+      ["responsibilities", /^(?:what you(?:'|’)ll do|responsibilities|duties|key responsibilities)\s*:?$/i],
+      ["requirements", /^(?:requirements|required skills|skills required|technical skills|required experience|must have|what you(?:'|’)ll need)\s*:?$/i],
+      ["qualifications", /^(?:qualifications|minimum qualifications|basic qualifications)\s*:?$/i],
+      ["preferred_qualifications", /^(?:preferred qualifications|nice to have|bonus points|strong bonus|preferred skills)\s*:?$/i],
+      ["how_to_apply", /^(?:how to apply|application instructions|to apply|application process)\s*:?$/i],
+      ["benefits", /^(?:benefits|what we offer|perks and benefits)\s*:?$/i]
+    ];
+    const allHeadings = aliases.map(([, pattern]) => pattern);
+    const lines = overviewText.split(/\n+/).map(cleanText).filter(Boolean);
+    const collected = {};
+    let current = null;
+
+    for (const line of lines) {
+      const inlineMatch = line.match(/^([^:]{2,55}):\s*(.+)$/);
+      let matched = null;
+      let content = null;
+
+      for (const [key, pattern] of aliases) {
+        if (pattern.test(line)) {
+          matched = key;
+          break;
+        }
+        if (inlineMatch && pattern.test(`${inlineMatch[1]}:`)) {
+          matched = key;
+          content = cleanText(inlineMatch[2]);
+          break;
+        }
+      }
+
+      if (matched) {
+        current = matched;
+        if (!collected[current]) collected[current] = [];
+        if (content) collected[current].push(content);
+        continue;
+      }
+
+      // A new bold-style heading without a colon is usually one of the common
+      // job-ad sections. Keep unrecognized lines as part of the active section.
+      if (current) collected[current].push(line);
+    }
+
+    for (const [key, values] of Object.entries(collected)) {
+      result[key] = cleanText(values.join("\n")) || null;
+    }
+    return result;
+  }
+
+  function skillsFromRequirementText(requirementText) {
+    if (!requirementText) return [];
+    const items = requirementText.split(/\n+/)
+      .map(line => cleanText(line.replace(/^[\s•·▪◦\-–—*]+/, "")))
+      .filter(Boolean)
+      .flatMap(line => {
+        if (line.length < 100 && /[,;|]/.test(line)) {
+          return line.split(/[,;|]/).map(cleanText).filter(Boolean);
+        }
+        return [line];
+      })
+      .filter(line => line.length <= 180)
+      .filter(line => !/^(?:requirements|required skills|skills required|technical skills|required experience|must have)$/i.test(line));
+    return [...new Set(items)].slice(0, 100);
+  }
+
+  function getOnlineJobsDescription(jobPosting, lines) {
+    const overview = getOnlineJobsSection(lines, ["JOB OVERVIEW"]);
+    if (overview && overview.length > 40) return overview.slice(0, 40000);
+    return getDescription(jobPosting);
+  }
+
   function getMatchedSkills(lines) {
     const start = lines.findIndex(line => /^how you match$/i.test(line));
     if (start < 0) return [];
@@ -355,12 +550,30 @@
       throw new Error("No job title was found. Open an individual job detail page, not the search results page.");
     }
 
-    const description = getDescription(jobPosting);
-    const salary = salaryFromStructured(jobPosting?.baseSalary) || salaryFromVisibleText(lines, pageText);
+    const onlineJobsType = !isJobStreet ? getOnlineJobsSectionValue(lines, ["TYPE OF WORK"]) : null;
+    const onlineJobsWage = !isJobStreet ? getOnlineJobsSectionValue(lines, ["WAGE / SALARY"]) : null;
+    const onlineJobsHours = !isJobStreet ? getOnlineJobsSectionValue(lines, ["HOURS PER WEEK"]) : null;
+    const onlineJobsDateUpdated = !isJobStreet ? getOnlineJobsSectionValue(lines, ["DATE UPDATED"]) : null;
+    const onlineJobsOverview = !isJobStreet ? getOnlineJobsSection(lines, ["JOB OVERVIEW"]) : null;
+    const onlineJobsSkillData = !isJobStreet ? getOnlineJobsSkillRequirement(lines) : { text: null, skills: [] };
+    const overviewSections = !isJobStreet
+      ? extractOverviewSections(onlineJobsOverview)
+      : { responsibilities: null, requirements: null, qualifications: null, preferred_qualifications: null, how_to_apply: null, benefits: null, other_sections: {} };
+    const explicitOverviewSkills = !isJobStreet
+      ? skillsFromRequirementText(overviewSections.requirements || overviewSections.qualifications || overviewSections.preferred_qualifications)
+      : [];
+
+    const description = !isJobStreet
+      ? (onlineJobsOverview || getOnlineJobsDescription(jobPosting, lines))
+      : getDescription(jobPosting);
+    const salary = (!isJobStreet && onlineJobsWage) ||
+      salaryFromStructured(jobPosting?.baseSalary) ||
+      salaryFromVisibleText(lines, pageText);
     const salaryDisclosed = salary ? !/undisclosed/i.test(salary) : null;
     const canonical = document.querySelector('link[rel="canonical"]')?.href || location.href;
     const postedText = findPostedText(lines);
     const datePosted = toPlainString(jobPosting?.datePosted) ||
+      onlineJobsDateUpdated ||
       getMeta('meta[property="article:published_time"]', 'meta[name="date"]') ||
       postedText ||
       document.querySelector("time[datetime]")?.getAttribute("datetime") ||
@@ -374,15 +587,30 @@
       location: getLocation(jobPosting, lines),
       salary: salary,
       salary_disclosed: salaryDisclosed,
-      employment_type: getEmploymentType(jobPosting, lines),
+      employment_type: (!isJobStreet && onlineJobsType) || getEmploymentType(jobPosting, lines),
       job_category: isJobStreet ? getJobCategory(lines) : null,
       work_arrangement: isJobStreet ? getWorkArrangement(lines) : null,
       shift_schedule: isJobStreet ? getShiftSchedule(lines) : null,
-      hours_per_week: getHoursPerWeek(lines, description),
+      hours_per_week: (!isJobStreet && onlineJobsHours) || getHoursPerWeek(lines, description),
       experience_level: getExperienceLevel(lines, description),
       date_posted: datePosted,
+      date_updated: onlineJobsDateUpdated,
       posted_text: postedText,
-      skills: getRequiredSkills(lines, jobPosting),
+      job_overview: onlineJobsOverview,
+      responsibilities: overviewSections.responsibilities,
+      requirements: overviewSections.requirements,
+      qualifications: overviewSections.qualifications,
+      preferred_qualifications: overviewSections.preferred_qualifications,
+      benefits: overviewSections.benefits,
+      how_to_apply: overviewSections.how_to_apply,
+      skill_requirement_text: onlineJobsSkillData.text,
+      skill_requirement_categories: onlineJobsSkillData.skills,
+      required_skills: !isJobStreet
+        ? (explicitOverviewSkills.length ? explicitOverviewSkills : onlineJobsSkillData.skills)
+        : getRequiredSkills(lines, jobPosting),
+      skills: !isJobStreet
+        ? (explicitOverviewSkills.length ? explicitOverviewSkills : onlineJobsSkillData.skills)
+        : getRequiredSkills(lines, jobPosting),
       matched_skills: isJobStreet ? getMatchedSkills(lines) : [],
       description: description,
       job_url: canonical,
@@ -393,7 +621,9 @@
     if (!data.description) data.extraction_warnings.push("Job description was not detected.");
     if (!data.salary) data.extraction_warnings.push("Salary was not detected or is not displayed.");
     if (!data.employer) data.extraction_warnings.push("Employer name was not detected.");
-    if (!data.skills.length && !data.matched_skills.length) data.extraction_warnings.push("No skill information was detected.");
+    if (!data.skills.length && !data.matched_skills.length) data.extraction_warnings.push(
+      isJobStreet ? "No skill information was detected." : "The OnlineJobs.ph SKILL REQUIREMENT section was not detected. Check the page layout or share a screenshot of that section."
+    );
 
     return data;
   }

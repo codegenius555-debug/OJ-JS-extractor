@@ -10,6 +10,9 @@ A Google Chrome Manifest V3 extension that extracts one currently open job listi
 
 ## Features
 
+- Improved OnlineJobs.ph extraction for the separate `JOB OVERVIEW` and `SKILL REQUIREMENT` sections.
+- Captures the site's `TYPE OF WORK`, `WAGE / SALARY`, `HOURS PER WEEK`, and `DATE UPDATED` fields.
+
 - Extracts an individual job detail page, not a list of search results.
 - Uses structured `JobPosting` JSON-LD when the website provides it, then falls back to visible page text.
 - Displays a formatted JSON preview.
@@ -32,7 +35,13 @@ Common fields:
 - `experience_level`
 - `date_posted`
 - `posted_text`
-- `skills`
+- `skills` (backward-compatible alias for required skills)
+- `required_skills` (explicit skills/requirements parsed from JOB OVERVIEW, falling back to the site's skill tags)
+- `skill_requirement_categories` (the separate OnlineJobs.ph SKILL REQUIREMENT taxonomy)
+- `responsibilities`, `requirements`, `qualifications`, `preferred_qualifications`, `benefits`, and `how_to_apply` (when these headings appear in JOB OVERVIEW)
+- `skill_requirement_text` (full raw skill section)
+- `job_overview` (OnlineJobs.ph JOB OVERVIEW section)
+- `date_updated` (OnlineJobs.ph DATE UPDATED field)
 - `description`
 - `job_url`
 - `extracted_at`
