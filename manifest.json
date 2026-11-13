@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "OnlineJobs.ph JSON Extractor",
+  "version": "1.0.0",
+  "description": "Extract structured information from the currently open OnlineJobs.ph job listing and copy or download it as JSON.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "downloads",
+    "clipboardWrite"
+  ],
+  "action": {
+    "default_title": "Extract OnlineJobs.ph job",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://onlinejobs.ph/*",
+        "https://www.onlinejobs.ph/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
